@@ -27,7 +27,7 @@ const upload = multer({
   },
 });
 
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -544,8 +544,11 @@ function extractJSON(text) {
   return JSON.parse(jsonSlice);
 }
 
-app.get("/", (req, res) => {
-  res.send("ResumePilot Backend is running successfully!");
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    message: "ResumePilot AI backend is running"
+  });
 });
 
 app.post("/api/enhance-resume", async (req, res) => {
