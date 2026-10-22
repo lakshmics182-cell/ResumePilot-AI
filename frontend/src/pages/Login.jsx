@@ -1,8 +1,9 @@
+import { API_BASE } from "../config";
 import { useState } from "react";
 
-const AUTH_BASE = "http://localhost:5000/api/auth";
+const AUTH_BASE = `${API_BASE}/auth`;
 
-function Login({ onLogin }) {
+function Login({ onLogin, notice }) {
 
   const [isRegister, setIsRegister] = useState(false);
 
@@ -174,6 +175,12 @@ function Login({ onLogin }) {
             </div>
 
           </div>
+
+          {notice && !error && (
+            <div className="auth-error">
+              ⚠️ {notice}
+            </div>
+          )}
 
           {error && (
             <div className="auth-error">

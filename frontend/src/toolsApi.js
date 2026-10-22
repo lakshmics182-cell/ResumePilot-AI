@@ -1,10 +1,11 @@
+import { API_BASE, API_ORIGIN } from "./config";
 /*
  * Small helpers shared by the career-tool pages: talking to the
  * backend, and attaching the chosen resume source to a request.
  */
 
-export const API = "https://resumepilot-ai-1.onrender.com/api";
-export const SERVER = "https://resumepilot-ai-1.onrender.com";
+export const API = API_BASE;
+export const SERVER = API_ORIGIN;
 
 export function getToken() {
   return localStorage.getItem("resumepilot_token");

@@ -1,4 +1,4 @@
-import { Component, useState } from "react";
+import { Component, useEffect, useState } from "react";
 import "./App.css";
 
 import Login from "./pages/Login";
@@ -132,6 +132,75 @@ function AppContent() {
 
   const closeTool = () => setPage(toolOrigin);
 
+  /*
+   * If the server rejects our saved login token (expired, or the
+   * server was restarted with a different secret), clear it and
+   * return to the login page instead of leaving the user stuck on
+   * an error banner. Login / register requests send no token, so a
+   * wrong password is not affected.
+   */
+  const [authNotice, setAuthNotice] = useState("");
+
+  useEffect(() => {
+    const originalFetch = window.fetch;
+
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+
+      try {
+        const init = args[1] || {};
+        const source = args[0];
+        const headers = new Headers(
+          init.headers ||
+            (source instanceof Request ? source.headers : undefined)
+        );
+
+        if (
+          response.status === 401 &&
+          (headers.get("Authorization") || "").startsWith("Bearer ") &&
+          localStorage.getItem("resumepilot_token")
+        ) {
+          let serverMessage = "";
+
+          try {
+            const body = await response.clone().json();
+            serverMessage = body?.error || "";
+          } catch {
+            // response had no JSON body
+          }
+
+          const method = (
+            init.method ||
+            (source instanceof Request ? source.method : "GET")
+          ).toUpperCase();
+          const url = String(
+            source instanceof Request ? source.url : source
+          ).replace(/^https?:\/\/[^/]+/, "");
+
+          // Shown on the login page so the real cause is visible.
+          setAuthNotice(
+            `The server rejected your login on ${method} ${url}` +
+              (serverMessage ? ` (${serverMessage})` : "") +
+              ". Please log in again."
+          );
+
+          localStorage.removeItem("resumepilot_token");
+          localStorage.removeItem("resumepilot_user");
+          setUser(null);
+          setPage("login");
+        }
+      } catch {
+        // never let this helper break a normal request
+      }
+
+      return response;
+    };
+
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
+
   const handleLogout = () => {
     localStorage.removeItem("resumepilot_token");
     localStorage.removeItem("resumepilot_user");
@@ -143,7 +212,9 @@ function AppContent() {
   if (page === "login") {
     return (
       <Login
+        notice={authNotice}
         onLogin={(loggedInUser) => {
+          setAuthNotice("");
           setUser(loggedInUser);
           setPage("dashboard");
         }}

@@ -1,4 +1,6 @@
-require("dotenv").config();
+require("dotenv").config({
+  path: require("path").join(__dirname, ".env"),
+});
 
 const express = require("express");
 const cors = require("cors");
@@ -42,6 +44,12 @@ if (!JWT_SECRET) {
 const EFFECTIVE_JWT_SECRET =
   JWT_SECRET || "resumepilot-dev-secret-change-me";
 
+console.log(
+  `JWT secret source: ${
+    JWT_SECRET ? "backend/.env" : "built-in development default"
+  }`
+);
+
 /*
  * Verifies the Bearer token on protected routes and attaches
  * the decoded { id, email, name } payload to req.user.
@@ -53,6 +61,10 @@ function requireAuth(req, res, next) {
     : null;
 
   if (!token) {
+    console.warn(
+      `[auth] pid ${process.pid} no token on ${req.method} ${req.originalUrl}`
+    );
+
     return res.status(401).json({
       error: "Please log in to continue.",
     });
@@ -62,8 +74,18 @@ function requireAuth(req, res, next) {
     req.user = jwt.verify(token, EFFECTIVE_JWT_SECRET);
     next();
   } catch (error) {
+    console.warn(
+      `[auth] pid ${process.pid} rejected ${req.method} ${req.originalUrl}: ${error.message}` +
+        (error.expiredAt
+          ? ` (token expired at ${error.expiredAt.toISOString()}, server time is ${new Date().toISOString()})`
+          : "")
+    );
+
     return res.status(401).json({
-      error: "Your session has expired. Please log in again.",
+      error:
+        error.name === "TokenExpiredError"
+          ? "Your session has expired. Please log in again."
+          : "Your login is no longer valid. Please log in again.",
     });
   }
 }
@@ -544,11 +566,8 @@ function extractJSON(text) {
   return JSON.parse(jsonSlice);
 }
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "ResumePilot AI backend is running"
-  });
+app.get("/", (req, res) => {
+  res.send("ResumePilot Backend is running successfully!");
 });
 
 app.post("/api/enhance-resume", async (req, res) => {
@@ -1534,6 +1553,6 @@ app.get("/p/:slug", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(
-    `ResumePilot Backend running on http://localhost:${PORT}`
+    `ResumePilot Backend running on http://localhost:${PORT} (pid ${process.pid})`
   );
 });

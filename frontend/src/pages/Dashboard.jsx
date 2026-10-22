@@ -1,7 +1,8 @@
+import { API_BASE, API_ORIGIN } from "../config";
 import { useEffect, useState } from "react";
 import { apiGet, apiSend } from "../toolsApi";
 
-const API_BASE = "http://localhost:5000/api";
+
 
 function authHeaders() {
   const token = localStorage.getItem(
@@ -656,7 +657,7 @@ function Dashboard({
                       {portfolio.isPublic && (
                         <a
                           className="row-link"
-                          href={`http://localhost:5000${portfolio.url}`}
+                          href={`${API_ORIGIN}${portfolio.url}`}
                           target="_blank"
                           rel="noopener noreferrer"
                         >
