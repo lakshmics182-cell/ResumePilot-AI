@@ -3,8 +3,8 @@
  * backend, and attaching the chosen resume source to a request.
  */
 
-export const API = "http://localhost:5000/api";
-export const SERVER = "http://localhost:5000";
+export const API = "https://resumepilot-ai-1.onrender.com/api";
+export const SERVER = "https://resumepilot-ai-1.onrender.com";
 
 export function getToken() {
   return localStorage.getItem("resumepilot_token");
