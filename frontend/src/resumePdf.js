@@ -12,7 +12,7 @@ import { jsPDF } from "jspdf";
  *     { heading, lines: ["text", ...] },
  *   ],
  * }
- * template = "classic" | "modern" | "minimal" | "professional" | "executive"
+ * template = "classic" | "modern" | "minimal" | "professional" | "executive" | "clean"
  */
 const TEMPLATES = {
   classic: {
@@ -70,6 +70,22 @@ const TEMPLATES = {
     headingRule: { width: 1.6, color: [38, 59, 104] },
     entryColor: [38, 59, 104],
     bodyColor: [60, 60, 75],
+  },
+  clean: {
+    font: "helvetica",
+    align: "left",
+    margin: 58,
+    nameSize: 24,
+    nameColor: [34, 34, 34],
+    jobColor: [85, 85, 85],
+    contactColor: [100, 100, 100],
+    headerRule: { width: 0.8, color: [100, 116, 139] },
+    headingColor: [34, 34, 34],
+    headingSize: 10.5,
+    headingRule: { width: 0.8, color: [34, 34, 34] },
+    sectionGap: 12,
+    entryColor: [34, 34, 34],
+    bodyColor: [60, 60, 60],
   },
   executive: {
     font: "times",

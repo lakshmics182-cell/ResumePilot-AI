@@ -111,6 +111,9 @@ export function normalizeName(text) {
   return clean(value.replace(/[^A-Za-z\s]/g, " "));
 }
 
+const EMAIL_PROVIDERS =
+  "gmail|yahoo|outlook|hotmail|icloud|rediffmail|protonmail|proton|live";
+
 export function normalizeEmail(text) {
   let value = clean(text)
     .toLowerCase()
@@ -120,8 +123,18 @@ export function normalizeEmail(text) {
       ""
     );
 
+  // "double eight" -> "88", "triple zero" -> "000"
+  value = value.replace(
+    /\b(double|triple)\s+(zero|one|two|three|four|five|six|seven|eight|nine|\d)\b/g,
+    (match, repeat, digit) => {
+      const d = /^\d$/.test(digit) ? digit : DIGIT_WORDS[digit];
+      return d.repeat(REPEATERS[repeat]);
+    }
+  );
+
   value = ` ${value} `
     .replace(/\s+at the rate(?: of)?\s+/g, "@")
+    .replace(/\s+at sign\s+/g, "@")
     .replace(/\s+at\s+/g, "@")
     .replace(/\s+dot\s+/g, ".")
     .replace(/\s+underscore\s+/g, "_")
@@ -134,9 +147,29 @@ export function normalizeEmail(text) {
     (word) => DIGIT_WORDS[word]
   );
 
-  return stripTrailingPunctuation(
-    value.replace(/\s+/g, "")
+  value = stripTrailingPunctuation(value.replace(/\s+/g, ""));
+
+  // "...@gmailcom" (the "dot" was not heard) -> "...@gmail.com"
+  value = value.replace(
+    new RegExp(`@(${EMAIL_PROVIDERS})com$`),
+    "@$1.com"
   );
+
+  // The "at" was not heard: "lakshmi182gmail.com" -> "lakshmi182@gmail.com"
+  if (!value.includes("@")) {
+    value = value.replace(
+      new RegExp(`^(.+?)(${EMAIL_PROVIDERS})(?:\\.?com)?$`),
+      "$1@$2.com"
+    );
+  }
+
+  // The ending was not heard: "name@gmail" -> "name@gmail.com"
+  value = value.replace(
+    new RegExp(`@(${EMAIL_PROVIDERS})$`),
+    "@$1.com"
+  );
+
+  return value;
 }
 
 export function normalizePhone(text) {
