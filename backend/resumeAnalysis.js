@@ -154,11 +154,13 @@ function findSkills(text) {
 /* Small text helpers                                                 */
 /* ------------------------------------------------------------------ */
 
-const BULLET_PATTERN = /^\s*[•●▪▸◦○■□\-*–—]\s+(.*)$/;
+const BULLET_PATTERN = /^\s*[•●▪▸◦○■□❖◆◇✦✔✓➢➤►▶★\-*–—]\s*(?=\S)(.*)$/;
 
 function splitLines(text) {
   return String(text || "")
     .replace(/\r/g, "")
+    // "❖ one ❖ two" on a single line -> one bullet per line
+    .replace(/\s*([❖◆◇✦➢➤►▶])\s*/g, "\n$1 ")
     .split("\n")
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
@@ -195,6 +197,12 @@ const SECTION_HEADINGS = {
     /^(?:achievements?|awards?(?:\s+(?:&|and)\s+achievements?)?|accomplishments|honou?rs)$/i,
   languages: /^languages?(?:\s+known)?$/i,
   interests: /^(?:interests|hobbies)$/i,
+  // Activities are shown together with achievements.
+  activities:
+    /^(?:extra[-\s]?curricular(?:\s+activities)?|co[-\s]?curricular(?:\s+activities)?|activities|positions?\s+of\s+responsibility|participations?)$/i,
+  // Not resume content: this text must never leak into another section.
+  ignored:
+    /^(?:declaration|personal\s+(?:details|information|profile|data)|references?|signature|strengths?|weaknesses?|personal\s+skills)$/i,
 };
 
 function detectHeading(line) {
@@ -295,6 +303,18 @@ function parseResume(text) {
       continue;
     }
 
+    // Declaration text that has no heading ("I hereby declare ...")
+    if (/^i\s+hereby\s+(?:declare|certify|confirm)\b/i.test(line)) {
+      currentSection = "ignored";
+      sections.ignored = sections.ignored || [];
+      continue;
+    }
+
+    // Empty form fields such as "Place:", "Date:", "Signature"
+    if (/^(?:place|date|signature|signed|name)\s*[:.\-_]*$/i.test(line)) {
+      continue;
+    }
+
     // "Languages Known: English, Kannada" on one line.
     const inlineLanguages = line.match(
       /^languages?(?:\s+known)?\s*:\s*(.+)$/i
@@ -376,7 +396,10 @@ function parseResume(text) {
     experience: parseEntries(sections.experience || []),
     projects: parseEntries(sections.projects || []),
     certifications: parseEntries(sections.certifications || []),
-    achievements: parseEntries(sections.achievements || []),
+    achievements: parseEntries([
+      ...(sections.achievements || []),
+      ...(sections.activities || []),
+    ]),
     technicalSkills,
     nonTechnicalSkills,
     languages: (sections.languages || []).join(", ").trim(),

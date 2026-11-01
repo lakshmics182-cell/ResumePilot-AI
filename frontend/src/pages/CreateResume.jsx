@@ -1,5 +1,6 @@
+import { API_BASE } from "../config";
 import { useEffect, useRef, useState } from "react";
-import jsPDF from "jspdf";
+import { downloadResumePdf } from "../resumePdf";
 import {
   cleanForSpeech,
   detectExpression,
@@ -375,7 +376,7 @@ async function enhanceWithAI(
 ) {
   try {
     const response = await fetch(
-      "http://localhost:5000/api/enhance-resume",
+      `${API_BASE}/enhance-resume`,
       {
         method: "POST",
         headers: {
@@ -731,7 +732,7 @@ function CreateResume({
         );
 
         const response = await fetch(
-          `http://localhost:5000/api/resumes/${resumeId}`,
+          `${API_BASE}/resumes/${resumeId}`,
           {
             headers: token
               ? {
@@ -804,8 +805,8 @@ function CreateResume({
       const isUpdate = Boolean(savedResumeId);
 
       const url = isUpdate
-        ? `http://localhost:5000/api/resumes/${savedResumeId}`
-        : "http://localhost:5000/api/resumes";
+        ? `${API_BASE}/resumes/${savedResumeId}`
+        : `${API_BASE}/resumes`;
 
       const response = await fetch(url, {
         method: isUpdate ? "PUT" : "POST",
@@ -1203,163 +1204,6 @@ function CreateResume({
     setIsExportingPDF(true);
 
     try {
-      const pdf = new jsPDF({
-        orientation: "portrait",
-        unit: "pt",
-        format: "a4",
-      });
-
-      const pageWidth =
-        pdf.internal.pageSize.getWidth();
-      const pageHeight =
-        pdf.internal.pageSize.getHeight();
-      const margin = 50;
-      const contentWidth =
-        pageWidth - margin * 2;
-
-      let y = margin;
-
-      const ensureSpace = (needed) => {
-        if (
-          y + needed >
-          pageHeight - margin
-        ) {
-          pdf.addPage();
-          y = margin;
-        }
-      };
-
-      const addLines = (
-        text,
-        {
-          size = 10,
-          style = "normal",
-          gap = 13,
-          color = [40, 36, 50],
-          align = "left",
-          x = margin,
-          maxWidth = contentWidth,
-        } = {}
-      ) => {
-        if (!text) {
-          return;
-        }
-
-        pdf.setFont("helvetica", style);
-        pdf.setFontSize(size);
-        pdf.setTextColor(...color);
-
-        const lines = pdf.splitTextToSize(
-          String(text),
-          maxWidth
-        );
-
-        lines.forEach((line) => {
-          ensureSpace(gap);
-          pdf.text(line, x, y, { align });
-          y += gap;
-        });
-      };
-
-      const addSectionHeading = (heading) => {
-        y += 8;
-        ensureSpace(26);
-
-        pdf.setFont("helvetica", "bold");
-        pdf.setFontSize(11);
-        pdf.setTextColor(70, 55, 160);
-        pdf.text(heading, margin, y);
-        y += 5;
-
-        pdf.setDrawColor(210, 205, 225);
-        pdf.line(
-          margin,
-          y,
-          pageWidth - margin,
-          y
-        );
-        y += 14;
-      };
-
-      const addEntrySection = (
-        heading,
-        entries,
-        type
-      ) => {
-        if (!entries || entries.length === 0) {
-          return;
-        }
-
-        addSectionHeading(heading);
-
-        entries.forEach((item) => {
-          const { title, bullets } =
-            getEntryTitleAndBullets(
-              item,
-              type
-            );
-
-          addLines(title, {
-            size: 10.5,
-            style: "bold",
-            gap: 13,
-            color: [30, 28, 40],
-          });
-
-          bullets.forEach((bullet) => {
-            addLines(`•  ${bullet}`, {
-              size: 9.5,
-              gap: 12,
-              color: [70, 66, 80],
-            });
-          });
-
-          y += 6;
-        });
-      };
-
-      // Header
-      addLines(
-        resumeData.name || "Your Name",
-        {
-          size: 20,
-          style: "bold",
-          gap: 24,
-          align: "center",
-          x: pageWidth / 2,
-          color: [20, 18, 30],
-        }
-      );
-
-      const contactLine = [
-        resumeData.email,
-        resumeData.phone,
-        resumeData.location,
-      ]
-        .filter(Boolean)
-        .join("   |   ");
-
-      if (contactLine) {
-        addLines(contactLine, {
-          size: 9.5,
-          align: "center",
-          x: pageWidth / 2,
-          color: [110, 105, 125],
-        });
-      }
-
-      y += 8;
-      ensureSpace(4);
-      pdf.setDrawColor(40, 36, 50);
-      pdf.line(
-        margin,
-        y,
-        pageWidth - margin,
-        y
-      );
-      y += 18;
-
-      // Professional summary
       const summary =
         resumeData.professionalSummary ||
         [
@@ -1374,94 +1218,73 @@ function CreateResume({
           .filter(Boolean)
           .join(" ");
 
-      if (summary) {
-        addSectionHeading(
-          "PROFESSIONAL SUMMARY"
-        );
-        addLines(summary, {
-          size: 9.5,
-          gap: 13,
-          color: [70, 66, 80],
-        });
-        y += 6;
-      }
-
-      addEntrySection(
-        "KEY TECHNICAL PROJECTS",
-        resumeData.projects,
-        "projects"
-      );
-
-      addEntrySection(
-        "EDUCATION",
-        resumeData.education,
-        "education"
-      );
-
-      if (
-        resumeData.technicalSkills ||
-        resumeData.nonTechnicalSkills
-      ) {
-        addSectionHeading(
-          "TECHNICAL AND NON-TECHNICAL SKILLS"
+      const toEntries = (items, type) =>
+        (items || []).map((item) =>
+          getEntryTitleAndBullets(item, type)
         );
 
-        if (resumeData.technicalSkills) {
-          addLines(
-            `Technical Skills: ${resumeData.technicalSkills}`,
-            { size: 9.5, gap: 12, color: [70, 66, 80] }
-          );
-        }
+      const pdfData = {
+        name: resumeData.name,
+        jobTitle: resumeData.jobTitle,
+        contact: [
+          resumeData.email,
+          resumeData.phone,
+          resumeData.location,
+        ],
+        summary,
+        sections: [
+          {
+            heading: "KEY TECHNICAL PROJECTS",
+            entries: toEntries(resumeData.projects, "projects"),
+          },
+          {
+            heading: "EDUCATION",
+            entries: toEntries(resumeData.education, "education"),
+          },
+          {
+            heading: "TECHNICAL AND NON-TECHNICAL SKILLS",
+            lines: [
+              resumeData.technicalSkills
+                ? `Technical Skills: ${resumeData.technicalSkills}`
+                : "",
+              resumeData.nonTechnicalSkills
+                ? `Non-Technical Skills: ${resumeData.nonTechnicalSkills}`
+                : "",
+            ],
+          },
+          {
+            heading: "EXPERIENCE",
+            entries: toEntries(resumeData.experience, "experience"),
+          },
+          {
+            heading: "CERTIFICATIONS",
+            entries: toEntries(
+              resumeData.certifications,
+              "certifications"
+            ),
+          },
+          {
+            heading: "ACHIEVEMENTS",
+            entries: toEntries(
+              resumeData.achievements,
+              "achievements"
+            ),
+          },
+          {
+            heading: "LANGUAGES KNOWN",
+            lines: [resumeData.languages],
+          },
+        ],
+      };
 
-        if (resumeData.nonTechnicalSkills) {
-          addLines(
-            `Non-Technical Skills: ${resumeData.nonTechnicalSkills}`,
-            { size: 9.5, gap: 12, color: [70, 66, 80] }
-          );
-        }
-
-        y += 6;
-      }
-
-      addEntrySection(
-        "EXPERIENCE",
-        resumeData.experience,
-        "experience"
-      );
-
-      addEntrySection(
-        "CERTIFICATIONS",
-        resumeData.certifications,
-        "certifications"
-      );
-
-      addEntrySection(
-        "ACHIEVEMENTS",
-        resumeData.achievements,
-        "achievements"
-      );
-
-      if (resumeData.languages) {
-        addSectionHeading("LANGUAGES KNOWN");
-        addLines(resumeData.languages, {
-          size: 9.5,
-          gap: 12,
-          color: [70, 66, 80],
-        });
-      }
-
-      const fileName = `${(
-        resumeData.name || "Resume"
-      )
+      const fileName = `${(resumeData.name || "Resume")
         .trim()
-        .replace(/\s+/g, "_")}_Resume.pdf`;
+        .replace(/\s+/g, "_")}_Resume`;
 
-      pdf.save(fileName);
+      // The PDF uses the template chosen in the builder
+      downloadResumePdf(pdfData, fileName, selectedTemplate);
     } catch (error) {
-      console.error(
-        "PDF export failed:",
-        error
-      );
+      console.error("PDF export failed:", error);
 
       alert(
         "Something went wrong while creating the PDF. Please try again."

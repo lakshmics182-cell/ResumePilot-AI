@@ -132,6 +132,31 @@ function looksLikeSentence(title) {
 /* Resume profile -> portfolio data                                   */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Certifications / achievements as a clean list of short lines.
+ * Skips form leftovers ("DECLARATION", "Place:", "Date:", "Signature",
+ * the person's own name) and splits "❖ one ❖ two" into separate items.
+ */
+function cleanListEntries(entries, ownName) {
+  const own = String(ownName || "").trim().toLowerCase();
+
+  return (entries || [])
+    .flatMap((entry) =>
+      entry && entry.title ? [entry.title] : (entry && entry.bullets) || []
+    )
+    .flatMap((text) => String(text || "").split(/\s*[❖◆◇✦➢➤►▶]\s*/))
+    .map((text) => text.replace(/\s+/g, " ").trim())
+    .filter(
+      (text) =>
+        text &&
+        text.toLowerCase() !== own &&
+        !/^(?:declaration|place|date|signature|signed|name)\s*[:.\-_]*$/i.test(
+          text
+        ) &&
+        !/^i\s+hereby\s+(?:declare|certify|confirm)\b/i.test(text)
+    );
+}
+
 function portfolioDataFromProfile(profile, { headline } = {}) {
   const edu = educationInfo(profile);
   const stage = edu.degree
@@ -208,12 +233,8 @@ function portfolioDataFromProfile(profile, { headline } = {}) {
       title: entry.title,
       details: (entry.bullets || []).join("\n"),
     })),
-    certifications: (profile.certifications || []).map((entry) =>
-      entry.title || (entry.bullets || [])[0] || ""
-    ).filter(Boolean),
-    achievements: (profile.achievements || []).map((entry) =>
-      entry.title || (entry.bullets || [])[0] || ""
-    ).filter(Boolean),
+    certifications: cleanListEntries(profile.certifications, profile.name),
+    achievements: cleanListEntries(profile.achievements, profile.name),
     theme: "indigo",
   };
 }

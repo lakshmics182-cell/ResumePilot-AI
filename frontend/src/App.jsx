@@ -1,5 +1,6 @@
 import { Component, useEffect, useState } from "react";
 import "./App.css";
+import { API_ORIGIN } from "./config";
 
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -161,10 +162,12 @@ function AppContent() {
           localStorage.getItem("resumepilot_token")
         ) {
           let serverMessage = "";
+          let serverDiag = null;
 
           try {
             const body = await response.clone().json();
             serverMessage = body?.error || "";
+            serverDiag = body?.diag || null;
           } catch {
             // response had no JSON body
           }
@@ -177,11 +180,44 @@ function AppContent() {
             source instanceof Request ? source.url : source
           ).replace(/^https?:\/\/[^/]+/, "");
 
+          // What kind of token did the browser send, and how old is it?
+          let tokenInfo = "the saved token is not in the expected format";
+          let tokenKey = "none";
+          const savedToken =
+            localStorage.getItem("resumepilot_token") || "";
+          const parts = savedToken.split(".");
+
+          if (parts.length === 3) {
+            try {
+              const payload = JSON.parse(
+                atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))
+              );
+              const minutes = Math.max(
+                Math.round((Date.now() / 1000 - payload.iat) / 60),
+                0
+              );
+              tokenKey = `${payload.sid || "none"}/${payload.bid || "none"}`;
+              tokenInfo =
+                minutes < 120
+                  ? `the token was created ${minutes} min ago`
+                  : `the token was created ${
+                      Math.round((minutes / 60 / 24) * 10) / 10
+                    } days ago`;
+            } catch {
+              tokenInfo = "the saved token could not be read";
+            }
+          }
+
           // Shown on the login page so the real cause is visible.
           setAuthNotice(
             `The server rejected your login on ${method} ${url}` +
               (serverMessage ? ` (${serverMessage})` : "") +
-              ". Please log in again."
+              `. Please log in again. [Details: backend ${API_ORIGIN}; ${tokenInfo}; ` +
+              `token key/boot ${tokenKey}; server key/boot ${
+                serverDiag
+                  ? `${serverDiag.key}/${serverDiag.boot}`
+                  : "not reported (server is running older code)"
+              }]`
           );
 
           localStorage.removeItem("resumepilot_token");

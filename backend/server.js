@@ -44,6 +44,15 @@ if (!JWT_SECRET) {
 const EFFECTIVE_JWT_SECRET =
   JWT_SECRET || "resumepilot-dev-secret-change-me";
 
+// Short, non-reversible tags that identify WHICH key / WHICH server
+// start signed a token. Used only to explain "login no longer valid".
+const SECRET_ID = crypto
+  .createHash("sha256")
+  .update(String(JWT_SECRET || "resumepilot-dev-secret-change-me"))
+  .digest("hex")
+  .slice(0, 6);
+const BOOT_ID = crypto.randomBytes(3).toString("hex");
+
 console.log(
   `JWT secret source: ${
     JWT_SECRET ? "backend/.env" : "built-in development default"
@@ -75,7 +84,7 @@ function requireAuth(req, res, next) {
     next();
   } catch (error) {
     console.warn(
-      `[auth] pid ${process.pid} rejected ${req.method} ${req.originalUrl}: ${error.message}` +
+      `[auth] pid ${process.pid} key ${SECRET_ID} boot ${BOOT_ID} rejected ${req.method} ${req.originalUrl}: ${error.message}` +
         (error.expiredAt
           ? ` (token expired at ${error.expiredAt.toISOString()}, server time is ${new Date().toISOString()})`
           : "")
@@ -86,6 +95,7 @@ function requireAuth(req, res, next) {
         error.name === "TokenExpiredError"
           ? "Your session has expired. Please log in again."
           : "Your login is no longer valid. Please log in again.",
+      diag: { key: SECRET_ID, boot: BOOT_ID },
     });
   }
 }
@@ -163,7 +173,7 @@ app.post("/api/auth/register", (req, res) => {
       email: normalizedEmail,
     };
 
-    const token = jwt.sign(user, EFFECTIVE_JWT_SECRET, {
+    const token = jwt.sign({ ...user, sid: SECRET_ID, bid: BOOT_ID }, EFFECTIVE_JWT_SECRET, {
       expiresIn: "7d",
     });
 
@@ -231,7 +241,7 @@ app.post("/api/auth/login", (req, res) => {
       email: row.email,
     };
 
-    const token = jwt.sign(user, EFFECTIVE_JWT_SECRET, {
+    const token = jwt.sign({ ...user, sid: SECRET_ID, bid: BOOT_ID }, EFFECTIVE_JWT_SECRET, {
       expiresIn: "7d",
     });
 
@@ -631,77 +641,100 @@ Output ONLY the final resume content itself, starting directly with
 the first bullet point or sentence. Nothing before it, nothing after it.
 `;
 
-    const ollamaResponse = await fetch(
-      "http://localhost:11434/api/generate",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "llama3:8b",
-          prompt,
-          stream: false,
-        }),
-      }
-    );
-
-    if (!ollamaResponse.ok) {
-      const errorText =
-        await ollamaResponse.text();
-
-      console.error(
-        "Ollama error:",
-        errorText
-      );
-
-      return res.status(500).json({
-        error: "Ollama AI enhancement failed.",
-      });
-    }
-
-    const data =
-      await ollamaResponse.json();
-
-    const rawText =
-      data.response?.trim();
-
-    const enhancedText =
-      cleanAIResponse(rawText);
+    const rawText = (await callLlm(prompt)).trim();
+    const enhancedText = cleanAIResponse(rawText);
 
     if (!enhancedText) {
-      return res.status(500).json({
-        error:
-          "Ollama returned empty content.",
+      return res.status(502).json({
+        error: "The AI service returned empty content.",
       });
     }
 
     return res.json({
       enhancedText,
     });
-
   } catch (error) {
-    console.error(
-      "Ollama connection error:",
-      error
-    );
+    console.error("AI enhancement error:", error.message);
 
-    return res.status(500).json({
-      error:
-        "Unable to connect to local Ollama AI.",
+    return res.status(503).json({
+      error: "The AI service is not available right now.",
     });
   }
 });
 
 /*
- * Calls the local Ollama model and returns parsed JSON.
- * Used only for wording (rewrites, summaries) — never for scores.
+ * AI text generation (used only for wording, never for scores).
+ *
+ * Provider is chosen by environment variables in backend/.env:
+ *   GEMINI_API_KEY=...   -> Google Gemini (hosted: works for every user)
+ *   (no key)             -> local Ollama (only works on the machine that
+ *                           runs Ollama, e.g. your own laptop)
+ * Optional: LLM_PROVIDER=gemini | ollama, GEMINI_MODEL, OLLAMA_URL,
+ * OLLAMA_MODEL.
+ * If the AI is unavailable the app still works with rule-based results.
  */
-async function callOllamaJson(prompt, timeoutMs = 90000) {
+const LLM_PROVIDER = (
+  process.env.LLM_PROVIDER ||
+  (process.env.GEMINI_API_KEY ? "gemini" : "ollama")
+).toLowerCase();
+
+console.log(`AI provider: ${LLM_PROVIDER}`);
+
+async function callLlm(prompt, { json = false, timeoutMs = 90000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    if (LLM_PROVIDER === "gemini") {
+      const apiKey = process.env.GEMINI_API_KEY;
+
+      if (!apiKey) {
+        throw new Error("GEMINI_API_KEY is not set");
+      }
+
+      const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+      const baseUrl =
+        process.env.GEMINI_BASE_URL ||
+        "https://generativelanguage.googleapis.com";
+
+      const response = await fetch(
+        `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": apiKey,
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.2,
+              ...(json ? { responseMimeType: "application/json" } : {}),
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 200);
+        throw new Error(`Gemini returned ${response.status}: ${detail}`);
+      }
+
+      const data = await response.json();
+      const text = (data.candidates?.[0]?.content?.parts || [])
+        .map((part) => part.text || "")
+        .join("")
+        .trim();
+
+      if (!text) {
+        throw new Error("Gemini returned no text");
+      }
+
+      return text;
+    }
+
+    // Local Ollama
     const response = await fetch(
       `${process.env.OLLAMA_URL || "http://localhost:11434"}/api/generate`,
       {
@@ -712,7 +745,7 @@ async function callOllamaJson(prompt, timeoutMs = 90000) {
           model: process.env.OLLAMA_MODEL || "llama3:8b",
           prompt,
           stream: false,
-          format: "json",
+          ...(json ? { format: "json" } : {}),
           options: { temperature: 0.2, num_ctx: 4096 },
         }),
       }
@@ -723,11 +756,16 @@ async function callOllamaJson(prompt, timeoutMs = 90000) {
     }
 
     const data = await response.json();
-
-    return extractJSON(data.response);
+    return data.response;
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Same name as before so the other routes keep working unchanged.
+async function callOllamaJson(prompt, timeoutMs = 90000) {
+  const text = await callLlm(prompt, { json: true, timeoutMs });
+  return extractJSON(text);
 }
 
 /*
