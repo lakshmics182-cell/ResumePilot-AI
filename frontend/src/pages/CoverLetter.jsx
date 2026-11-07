@@ -240,11 +240,20 @@ function CoverLetter({ onBack, letterId = null }) {
                   resume.
                 </p>
               </div>
+            ) : result.aiReason === "rejected" ? (
+              <div className="ai-notice">
+                The AI wrote a letter, but it did not pass the
+                accuracy checks ({result.aiDetail}), so the template
+                letter built from your resume is shown. Click
+                Generate again to retry. The letter is ready to edit.
+              </div>
             ) : (
               <div className="ai-notice">
                 This letter was built from a template using your
                 resume facts. AI polishing isn't available right now
-                (is Ollama running?), but the letter is ready to edit.
+                (the AI service may be switched off or not set up on
+                the server), but the letter is ready to edit.
+                {result.aiDetail ? ` Reason: ${result.aiDetail}` : ""}
               </div>
             ))}
 

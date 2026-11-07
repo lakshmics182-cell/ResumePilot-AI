@@ -1,12 +1,13 @@
+import { API_BASE } from "../config";
 import { useRef, useState } from "react";
 import { downloadResumePdf } from "../resumePdf";
 import ImproveQuestions, { applyAnswers } from "./ImproveQuestions";
 
 const ANALYZE_ENDPOINT =
-  "http://localhost:5000/api/analyze-resume";
+  `${API_BASE}/analyze-resume`;
 
 const RESUMES_ENDPOINT =
-  "http://localhost:5000/api/resumes";
+  `${API_BASE}/resumes`;
 
 /* ------------------------------------------------------------------ */
 /* Helpers: turn the parsed resume + accepted rewrites into outputs   */
@@ -574,10 +575,11 @@ function AnalyzeResume({ onBack, onEditSaved }) {
             )
           ) : (
             <div className="ai-notice">
-              AI wording help isn't available right now (is
-              Ollama running?). Your scores, skill matching and
-              checks below are calculated without AI and are
-              still valid. Rewrite suggestions need the AI.
+              AI wording help isn't available right now (the AI
+              service may be switched off or not set up on the
+              server). Your scores, skill matching and checks
+              below are calculated without AI and are still
+              valid. Rewrite suggestions need the AI.
             </div>
           )}
 

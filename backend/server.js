@@ -11,6 +11,7 @@ const resumeAnalysis = require("./resumeAnalysis");
 const careerTools = require("./careerTools");
 const interviewEngine = require("./interviewEngine");
 const portfolioTools = require("./portfolioTools");
+const mailer = require("./mailer");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -177,7 +178,19 @@ app.post("/api/auth/register", (req, res) => {
       expiresIn: "7d",
     });
 
-    return res.status(201).json({ token, user });
+    // Confirmation email. It runs in the background so registration is
+    // never slowed down or blocked if the email cannot be sent.
+    mailer.sendWelcomeEmail(user).catch((mailError) => {
+      console.warn(
+        `[mail] Could not send the confirmation email to ${user.email}: ${mailError.message}`
+      );
+    });
+
+    return res.status(201).json({
+      token,
+      user,
+      confirmationEmail: Boolean(mailer.emailProvider()),
+    });
   } catch (error) {
     console.error("Register error:", error);
 
@@ -680,87 +693,324 @@ const LLM_PROVIDER = (
 
 console.log(`AI provider: ${LLM_PROVIDER}`);
 
+console.log(
+  `Email provider: ${
+    mailer.emailProvider() ||
+    "not configured (confirmation emails are skipped)"
+  }`
+);
+
 async function callLlm(prompt, { json = false, timeoutMs = 90000 } = {}) {
+  // A local model can need minutes on a normal laptop, so Ollama gets a
+  // much longer limit (default 5 minutes, change with OLLAMA_TIMEOUT_MS).
+  if (LLM_PROVIDER !== "gemini") {
+    timeoutMs = Math.max(
+      timeoutMs,
+      Number(process.env.OLLAMA_TIMEOUT_MS) || 300000
+    );
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     if (LLM_PROVIDER === "gemini") {
-      const apiKey = process.env.GEMINI_API_KEY;
-
-      if (!apiKey) {
+      if (!process.env.GEMINI_API_KEY) {
         throw new Error("GEMINI_API_KEY is not set");
       }
 
-      const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
-      const baseUrl =
-        process.env.GEMINI_BASE_URL ||
-        "https://generativelanguage.googleapis.com";
-
-      const response = await fetch(
-        `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": apiKey,
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.2,
-              ...(json ? { responseMimeType: "application/json" } : {}),
-            },
-          }),
-        }
+      const first = await geminiGenerate(
+        currentGeminiModel(),
+        prompt,
+        json,
+        controller.signal
       );
 
-      if (!response.ok) {
-        const detail = (await response.text()).slice(0, 200);
-        throw new Error(`Gemini returned ${response.status}: ${detail}`);
+      if (first.ok) {
+        return first.text;
       }
 
-      const data = await response.json();
-      const text = (data.candidates?.[0]?.content?.parts || [])
-        .map((part) => part.text || "")
-        .join("")
-        .trim();
+      // Model name retired or not available for this key: pick a working
+      // one automatically (unless the person chose GEMINI_MODEL).
+      if (first.status === 404 && !process.env.GEMINI_MODEL) {
+        const alternative = await pickGeminiModel(controller.signal);
 
-      if (!text) {
-        throw new Error("Gemini returned no text");
+        if (alternative && alternative !== currentGeminiModel()) {
+          console.warn(
+            `[ai] Gemini model "${currentGeminiModel()}" was not found; using "${alternative}" instead.`
+          );
+          detectedGeminiModel = alternative;
+
+          const second = await geminiGenerate(
+            alternative,
+            prompt,
+            json,
+            controller.signal
+          );
+
+          if (second.ok) {
+            return second.text;
+          }
+
+          throw new Error(second.error);
+        }
       }
 
-      return text;
+      throw new Error(first.error);
     }
 
     // Local Ollama
-    const response = await fetch(
-      `${process.env.OLLAMA_URL || "http://localhost:11434"}/api/generate`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: process.env.OLLAMA_MODEL || "llama3:8b",
-          prompt,
-          stream: false,
-          ...(json ? { format: "json" } : {}),
-          options: { temperature: 0.2, num_ctx: 4096 },
-        }),
-      }
+    const first = await ollamaGenerate(
+      currentOllamaModel(),
+      prompt,
+      json,
+      controller.signal
     );
 
-    if (!response.ok) {
-      throw new Error(`Ollama returned ${response.status}`);
+    if (first.ok) {
+      return first.text;
     }
 
-    const data = await response.json();
-    return data.response;
+    // The default model is not installed: use one that is (unless the
+    // person chose OLLAMA_MODEL themselves).
+    if (first.status === 404 && !process.env.OLLAMA_MODEL) {
+      const alternative = await pickOllamaModel(controller.signal);
+
+      if (alternative && alternative !== currentOllamaModel()) {
+        console.warn(
+          `[ai] Ollama model "${currentOllamaModel()}" is not installed; using "${alternative}" instead.`
+        );
+        detectedOllamaModel = alternative;
+
+        const second = await ollamaGenerate(
+          alternative,
+          prompt,
+          json,
+          controller.signal
+        );
+
+        if (second.ok) {
+          return second.text;
+        }
+
+        throw new Error(second.error);
+      }
+    }
+
+    throw new Error(first.error);
   } finally {
     clearTimeout(timer);
   }
 }
+
+
+let detectedOllamaModel = null;
+
+function ollamaBaseUrl() {
+  return process.env.OLLAMA_URL || "http://127.0.0.1:11434";
+}
+
+function currentOllamaModel() {
+  return process.env.OLLAMA_MODEL || detectedOllamaModel || "llama3:8b";
+}
+
+async function ollamaGenerate(model, prompt, json, signal) {
+  const response = await fetch(`${ollamaBaseUrl()}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal,
+    body: JSON.stringify({
+      model,
+      prompt,
+      stream: false,
+      keep_alive: process.env.OLLAMA_KEEP_ALIVE || "30m",
+      ...(json ? { format: "json" } : {}),
+      options: { temperature: 0.2, num_ctx: 4096 },
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 160);
+    return {
+      ok: false,
+      status: response.status,
+      error: `Ollama returned ${response.status}: ${detail}`,
+    };
+  }
+
+  const data = await response.json();
+
+  if (!data.response) {
+    return { ok: false, status: 200, error: "Ollama returned no text" };
+  }
+
+  return { ok: true, text: data.response };
+}
+
+async function listOllamaModels(signal) {
+  const response = await fetch(`${ollamaBaseUrl()}/api/tags`, { signal });
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const data = await response.json();
+
+  return (data.models || []).map((model) => model.name).filter(Boolean);
+}
+
+async function pickOllamaModel(signal) {
+  const names = (await listOllamaModels(signal)).filter(
+    (name) => !/embed|nomic|bge|minilm|clip/i.test(name)
+  );
+
+  // Prefer well-known chat models, otherwise anything installed.
+  return (
+    names.find((name) => /llama|qwen|gemma|mistral|phi/i.test(name)) ||
+    names[0] ||
+    null
+  );
+}
+
+let detectedGeminiModel = null;
+
+function currentGeminiModel() {
+  return (
+    process.env.GEMINI_MODEL || detectedGeminiModel || "gemini-3.5-flash"
+  );
+}
+
+function geminiBaseUrl() {
+  return (
+    process.env.GEMINI_BASE_URL ||
+    "https://generativelanguage.googleapis.com"
+  );
+}
+
+async function geminiGenerate(model, prompt, json, signal) {
+  const response = await fetch(
+    `${geminiBaseUrl()}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": process.env.GEMINI_API_KEY,
+      },
+      signal,
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          ...(json ? { responseMimeType: "application/json" } : {}),
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 200);
+    return {
+      ok: false,
+      status: response.status,
+      error: `Gemini returned ${response.status}: ${detail}`,
+    };
+  }
+
+  const data = await response.json();
+  const text = (data.candidates?.[0]?.content?.parts || [])
+    .map((part) => part.text || "")
+    .join("")
+    .trim();
+
+  if (!text) {
+    return { ok: false, status: 200, error: "Gemini returned no text" };
+  }
+
+  return { ok: true, text };
+}
+
+// Lists the models this API key can use and picks a "flash" one.
+async function listGeminiModels(signal) {
+  const response = await fetch(`${geminiBaseUrl()}/v1beta/models?pageSize=100`, {
+    headers: { "x-goog-api-key": process.env.GEMINI_API_KEY },
+    signal,
+  });
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const data = await response.json();
+
+  return (data.models || [])
+    .filter((model) =>
+      (model.supportedGenerationMethods || []).includes("generateContent")
+    )
+    .map((model) => String(model.name || "").replace(/^models\//, ""))
+    .filter(Boolean);
+}
+
+async function pickGeminiModel(signal) {
+  const names = await listGeminiModels(signal);
+  const usable = names.filter(
+    (name) => /flash/i.test(name) && !/(image|tts|live|embed|vision|thinking)/i.test(name)
+  );
+
+  // Prefer the newest-looking plain "flash" model
+  return usable.sort().reverse()[0] || null;
+}
+
+function aiHint(provider, message) {
+  const text = String(message || "");
+
+  if (provider === "gemini") {
+    if (/not set/i.test(text)) return "Add GEMINI_API_KEY to backend/.env (or to Render's Environment tab) and restart the backend.";
+    if (/API key not valid|API_KEY_INVALID|\b40[13]\b/i.test(text)) return "The Gemini API key is wrong or not allowed. Create a new key in Google AI Studio and update GEMINI_API_KEY.";
+    if (/\b404\b/.test(text)) return "The Gemini model name was not found. Set GEMINI_MODEL to a model shown in Google AI Studio.";
+    if (/\b429\b/.test(text)) return "Gemini's free-tier limit was reached. Wait a while or use another key.";
+    if (/aborted|timeout/i.test(text)) return "Gemini took too long to answer. Try again.";
+    if (/fetch failed|ENOTFOUND|ECONN/i.test(text)) return "The server cannot reach Google. Check the internet connection of the machine running the backend.";
+    return "See the error text above and the backend log.";
+  }
+
+  if (/fetch failed|ECONN|refused/i.test(text)) return "Ollama is not running at " + (process.env.OLLAMA_URL || "http://127.0.0.1:11434") + ". Start Ollama, or set GEMINI_API_KEY to use Gemini instead.";
+  if (/\b404\b/.test(text)) return "Ollama is running but the model is not installed. Run: ollama pull " + (process.env.OLLAMA_MODEL || "llama3:8b");
+  if (/aborted|timeout/i.test(text)) return "Ollama took too long (the model may be slow on this computer). Try a smaller model or use Gemini.";
+  return "See the error text above and the backend log.";
+}
+
+// Open http://localhost:5000/api/ai-status in a browser to test the AI.
+app.get("/api/ai-status", async (req, res) => {
+  const provider = LLM_PROVIDER;
+  const model =
+    provider === "gemini"
+      ? currentGeminiModel()
+      : currentOllamaModel();
+
+  try {
+    // The first Ollama answer can take a while: the model is loaded into
+    // memory on first use.
+    const reply = await callLlm("Reply with the single word OK.", {
+      timeoutMs: provider === "ollama" ? 150000 : 30000,
+    });
+
+    return res.json({
+      ok: true,
+      provider,
+      model:
+        provider === "gemini" ? currentGeminiModel() : currentOllamaModel(),
+      reply: String(reply).slice(0, 60),
+    });
+  } catch (error) {
+    return res.json({
+      ok: false,
+      provider,
+      model,
+      error: error.message,
+      hint: aiHint(provider, error.message),
+    });
+  }
+});
 
 // Same name as before so the other routes keep working unchanged.
 async function callOllamaJson(prompt, timeoutMs = 90000) {
@@ -803,10 +1053,12 @@ app.post(
       } catch (parseError) {
         console.error("Resume parsing error:", parseError);
 
+        // Only our own, user-friendly message is shown. Errors from the
+        // PDF / DOCX libraries stay in the server log.
         return res.status(400).json({
-          error:
-            parseError.message ||
-            "Could not read the uploaded resume file.",
+          error: /^Unsupported file type/.test(parseError.message || "")
+            ? parseError.message
+            : "Could not read the uploaded resume file. Please upload a valid PDF or DOCX file.",
         });
       }
 
@@ -1019,35 +1271,60 @@ app.post(
 
       let letter = draft.letter;
       let aiAvailable = false;
+      let aiReason = "";
+      let aiDetail = "";
 
-      try {
-        const llm = await callOllamaJson(
-          careerTools.buildCoverLetterPrompt(profile, {
-            role: draft.role,
-            company,
-            tone,
-            hiringManager,
-            matched: draft.matchedSkills,
-          })
-        );
+      const coverPrompt = careerTools.buildCoverLetterPrompt(profile, {
+        role: draft.role,
+        company,
+        tone,
+        hiringManager,
+        matched: draft.matchedSkills,
+      });
 
-        const valid = careerTools.validateCoverLetter(
-          llm && llm.letter,
-          profile,
-          tone
-        );
+      // Two tries: if the AI answers but its letter fails the accuracy
+      // checks, it is asked once more. A service problem is not retried.
+      for (let attempt = 1; attempt <= 2 && !aiAvailable; attempt += 1) {
+        const attemptStarted = Date.now();
 
-        if (valid) {
-          letter = valid;
-          aiAvailable = true;
+        try {
+          const llm = await callOllamaJson(coverPrompt);
+          const problem = careerTools.coverLetterProblem(
+            llm && llm.letter,
+            profile,
+            tone
+          );
+
+          if (!problem) {
+            letter = String(llm.letter).replace(/\r/g, "").trim();
+            aiAvailable = true;
+            aiReason = "";
+            aiDetail = "";
+          } else {
+            aiReason = "rejected";
+            aiDetail = problem;
+            console.warn(
+              `AI cover letter rejected by the accuracy checks (try ${attempt}): ${problem}`
+            );
+
+            // A slow model would make a second try take minutes again.
+            if (Date.now() - attemptStarted > 45000) {
+              break;
+            }
+          }
+        } catch (aiError) {
+          aiReason = "unavailable";
+          aiDetail = aiError.message;
+          console.warn("AI cover letter unavailable:", aiError.message);
+          break;
         }
-      } catch (aiError) {
-        console.warn("AI cover letter unavailable:", aiError.message);
       }
 
       return res.json({
         letter,
         aiAvailable,
+        aiReason,
+        aiDetail,
         role: draft.role,
         matchedSkills: draft.matchedSkills,
         missingSkills: draft.missingSkills,
@@ -1589,8 +1866,101 @@ app.get("/p/:slug", (req, res) => {
     );
 });
 
+/*
+ * Error handler: upload and request problems get a clear message
+ * (instead of a blank "500" page).
+ */
+app.use((error, req, res, next) => {
+  if (error && error.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({
+      error: "The file is too large. Please upload a resume under 10 MB.",
+    });
+  }
+
+  if (error instanceof multer.MulterError) {
+    return res.status(400).json({
+      error: "The file could not be uploaded. Please try again.",
+    });
+  }
+
+  if (error && error.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "The request data was not valid." });
+  }
+
+  if (error && error.type === "entity.too.large") {
+    return res.status(413).json({ error: "The data sent was too large." });
+  }
+
+  console.error("Unhandled error:", error);
+
+  return res.status(500).json({
+    error: "Something went wrong. Please try again.",
+  });
+});
+
+async function aiSelfTest() {
+  const started = Date.now();
+
+  try {
+    console.log(
+      `[ai] Testing the AI (${LLM_PROVIDER}). The first answer can take a minute while the model loads...`
+    );
+
+    await callLlm("Reply with the single word OK.", {
+      timeoutMs: LLM_PROVIDER === "ollama" ? 180000 : 30000,
+    });
+
+    const used =
+      LLM_PROVIDER === "gemini" ? currentGeminiModel() : currentOllamaModel();
+
+    const seconds = (Date.now() - started) / 1000;
+
+    console.log(
+      `[ai] AI is working: ${LLM_PROVIDER} model "${used}" answered in ${seconds.toFixed(
+        1
+      )}s`
+    );
+
+    if (
+      LLM_PROVIDER === "ollama" &&
+      seconds > (Number(process.env.AI_SLOW_TIP_SECONDS) || 45)
+    ) {
+      console.warn(
+        "[ai] This computer is slow with this model, so AI features can take a few minutes."
+      );
+      console.warn(
+        "[ai] Faster options: run  ollama pull llama3.2:3b  and add OLLAMA_MODEL=llama3.2:3b to backend/.env,"
+      );
+      console.warn(
+        "[ai] or add GEMINI_API_KEY=your_key to backend/.env to use Gemini (no local model needed)."
+      );
+    }
+  } catch (error) {
+    console.warn(`[ai] AI is NOT working: ${error.message}`);
+    console.warn(`[ai] What to do: ${aiHint(LLM_PROVIDER, error.message)}`);
+
+    if (LLM_PROVIDER === "ollama") {
+      try {
+        const installed = await listOllamaModels(AbortSignal.timeout(5000));
+        console.warn(
+          `[ai] Ollama is reachable. Installed models: ${
+            installed.length ? installed.join(", ") : "none"
+          }`
+        );
+      } catch {
+        console.warn(
+          `[ai] Ollama is not reachable at ${ollamaBaseUrl()} (start it, then restart this server).`
+        );
+      }
+    }
+  }
+}
+
 app.listen(PORT, () => {
   console.log(
     `ResumePilot Backend running on http://localhost:${PORT} (pid ${process.pid})`
   );
+
+  // Runs in the background; it never blocks the server.
+  aiSelfTest();
 });

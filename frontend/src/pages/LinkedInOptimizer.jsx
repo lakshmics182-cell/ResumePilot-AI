@@ -151,8 +151,8 @@ function LinkedInOptimizer({ onBack }) {
           ) : (
             <div className="ai-notice">
               This plan was built directly from your resume. AI
-              polishing isn't available right now (is Ollama
-              running?).
+              polishing isn't available right now (the AI service
+              may be switched off or not set up on the server).
             </div>
           )}
 

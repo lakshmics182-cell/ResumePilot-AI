@@ -583,37 +583,64 @@ Return ONLY valid JSON: { "letter": "the full letter text" }
 `;
 }
 
-function validateCoverLetter(letter, profile, tone) {
+/*
+ * Why an AI-written cover letter is rejected (or null if it is fine).
+ * The rules keep the AI from inventing facts that are not in the resume.
+ */
+function coverLetterProblem(letter, profile, tone) {
   if (typeof letter !== "string") {
-    return null;
+    return "the AI did not return a letter";
   }
 
   const text = letter.replace(/\r/g, "").trim();
   const count = words(text);
   const minimum = tone === "concise" ? 80 : 120;
 
-  if (count < minimum || count > 450 || !/^dear\b/i.test(text)) {
-    return null;
+  if (count < minimum || count > 450) {
+    return `the letter had ${count} words (it must be ${minimum}-450)`;
+  }
+
+  if (!/^dear\b/i.test(text)) {
+    return 'it did not start with "Dear"';
   }
 
   if (/\[[^\]]+\]|\*\*|^#/m.test(text)) {
-    return null;
+    return "it contained [placeholders] or formatting symbols";
   }
 
   const allowedNumbers = numbersIn(profile.rawText);
-  const inventedNumber = [...numbersIn(text)].some(
+  const invented = [...numbersIn(text)].filter(
     (value) => !allowedNumbers.has(value)
   );
 
-  if (inventedNumber) {
-    return null;
+  if (invented.length) {
+    return `it used numbers that are not in your resume (${invented
+      .slice(0, 4)
+      .join(", ")})`;
   }
 
-  const allowedSkills = new Set(
-    findSkills(profile.rawText).values()
-  );
+  const allowedSkills = new Set(findSkills(profile.rawText).values());
 
-  return inventedTech(text, allowedSkills) ? null : text;
+  if (inventedTech(text, allowedSkills)) {
+    const extra = [...findSkills(text)].filter(
+      (name) =>
+        !allowedSkills.has(name) &&
+        skillType(name) === "tech" &&
+        (CASE_SENSITIVE_TECH[name] ? CASE_SENSITIVE_TECH[name].test(text) : true)
+    );
+
+    return `it mentioned technologies that are not in your resume (${extra
+      .slice(0, 4)
+      .join(", ")})`;
+  }
+
+  return null;
+}
+
+function validateCoverLetter(letter, profile, tone) {
+  return coverLetterProblem(letter, profile, tone)
+    ? null
+    : letter.replace(/\r/g, "").trim();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1162,6 +1189,7 @@ module.exports = {
   buildCoverLetterDraft,
   buildCoverLetterPrompt,
   validateCoverLetter,
+  coverLetterProblem,
   buildLinkedInPlan,
   buildLinkedInPrompt,
   applyLinkedInAi,
